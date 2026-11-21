@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block title %}站号互换{% endblock %}
+{% block content %}
+<h1>站号互换</h1>
+<p class="lede">
+  网关把两座测站的站号贴反时，在此登记互换：选择两座站点与误标时段（UTC 整点，含起点、不含终点）。
+  登记后时段内的已有读数立即换到对站（保留各自的导入批次号），此后按原站号补传/重传的读数，
+  也会按观测时刻自动归到对站，时段外照常入库。
+</p>
+
+<div class="grid side">
+  <div>
+    <section class="card">
+      <div class="card-head">
+        <h2>已登记的互换规则</h2>
+        <span class="small muted">{{ swaps|length }} 条</span>
+      </div>
+      {% if swaps %}
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>#</th><th>站对</th><th>误标时段（UTC，含起点不含终点）</th><th class="num">登记时互换读数</th><th>备注</th><th>登记时间</th></tr>
+          </thead>
+          <tbody>
+            {% for sw in swaps %}
+            <tr>
+              <td class="num">{{ sw.id }}</td>
+              <td class="nowrap">
+                <a href="/stations/{{ sw.station_a_id }}">{{ sw.station_a_code }}</a>
+                ⇄
+                <a href="/stations/{{ sw.station_b_id }}">{{ sw.station_b_code }}</a>
+              </td>
+              <td class="small mono nowrap">{{ sw.start_at|dt }} – {{ sw.end_at|dt }}</td>
+              <td class="num small nowrap">
+                {{ sw.station_a_code }}→{{ sw.station_b_code }} {{ sw.moved_a_to_b }} 条<br>
+                {{ sw.station_b_code }}→{{ sw.station_a_code }} {{ sw.moved_b_to_a }} 条
+              </td>
+              <td class="small muted">{{ sw.note or '—' }}</td>
+              <td class="small muted nowrap">{{ sw.created_at|dt }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <div class="empty">尚未登记互换规则。</div>
+      {% endif %}
+    </section>
+  </div>
+
+  <aside>
+    <section class="card">
+      <h2>登记站号互换</h2>
+      {% if stations|length >= 2 %}
+      <form method="post" action="/swaps" class="stack" data-busy="1">
+        <div class="row">
+          <div class="field" style="flex:1">
+            <label for="station_a_id">站点一 *</label>
+            <select id="station_a_id" name="station_a_id" required>
+              {% for s in stations %}
+              <option value="{{ s.id }}">{{ s.code }} · {{ s.name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="field" style="flex:1">
+            <label for="station_b_id">站点二 *</label>
+            <select id="station_b_id" name="station_b_id" required>
+              {% for s in stations %}
+              <option value="{{ s.id }}" {{ 'selected' if loop.index == 2 }}>{{ s.code }} · {{ s.name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+        <div class="row">
+          <div class="field" style="flex:1">
+            <label for="start_at">误标起点（UTC 整点，含）*</label>
+            <input id="start_at" type="datetime-local" name="start_at" step="3600" required>
+          </div>
+          <div class="field" style="flex:1">
+            <label for="end_at">误标终点（UTC 整点，不含）*</label>
+            <input id="end_at" type="datetime-local" name="end_at" step="3600" required>
+          </div>
+        </div>
+        <div class="field">
+          <label for="note">备注</label>
+          <input id="note" type="text" name="note" maxlength="200" placeholder="如：网关贴反站号，巡检发现">
+        </div>
+        <button class="btn" type="submit">登记互换</button>
+      </form>
+      {% else %}
+      <div class="empty">至少登记两座站点后才能登记互换。请先到 <a href="/upload">上传页</a> 创建站点。</div>
+      {% endif %}
+    </section>
+
+    <section class="card">
+      <h2>规则说明</h2>
+      <ul class="small" style="margin:0; padding-left:18px; color:var(--ink-soft)">
+        <li>时段按 UTC 整点对齐，含起点、不含终点；起点必须早于终点。</li>
+        <li>登记即生效：时段内已有读数换到对站，保留各自的导入批次号；只有一边有值也照移。</li>
+        <li>重复登记同一对站点与同一时段只生效一次，不会重复搬移。</li>
+        <li>任一站的时段与其他规则重叠时拒绝登记，原规则与读数归属保持不变。</li>
+        <li>补传/重传仍用原站号上传，时段内的读数按观测时刻归到对站，时段外照常入库。</li>
+        <li>站点页的小时覆盖与新发布的日报使用纠正后的数据；已发布日报仍保留原快照。</li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <h2>API</h2>
+      <pre>POST /api/swaps
+{"station_a_id": 1, "station_b_id": 2,
+ "start_at": "{{ default_date }}T00:00:00Z",
+ "end_at": "{{ today }}T00:00:00Z",
+ "note": "网关贴反站号"}</pre>
+      <p class="small" style="margin-bottom:0"><a href="/docs" target="_blank" rel="noopener">OpenAPI 文档 →</a></p>
+    </section>
+  </aside>
+</div>
+{% endblock %}

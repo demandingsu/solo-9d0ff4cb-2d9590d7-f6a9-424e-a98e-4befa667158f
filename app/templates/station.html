@@ -188,6 +188,34 @@
   </div>
 
   <aside>
+    {% if swaps %}
+    <section class="card" style="border-color:#f0dcae; background:#fffdf7">
+      <div class="card-head">
+        <h2>站号互换规则</h2>
+        <a href="/swaps" class="small">管理 →</a>
+      </div>
+      <ul class="timeline">
+        {% for sw in swaps %}
+        <li>
+          <span class="dot warn"></span>
+          <span>
+            <strong>{{ sw.station_a_code }} ⇄ {{ sw.station_b_code }}</strong><br>
+            <span class="small muted">
+              {{ sw.start_at|dt }} – {{ sw.end_at|dt }}（含起点不含终点）<br>
+              登记时互换：{{ sw.station_a_code }}→{{ sw.station_b_code }} {{ sw.moved_a_to_b }} 条 ·
+              {{ sw.station_b_code }}→{{ sw.station_a_code }} {{ sw.moved_b_to_a }} 条
+              {% if sw.note %}<br>{{ sw.note }}{% endif %}
+            </span>
+          </span>
+        </li>
+        {% endfor %}
+      </ul>
+      <p class="small muted" style="margin-bottom:0">
+        时段内按原站号补传/重传的读数会按观测时刻自动归到对站；本页小时覆盖与新发布的日报已按纠正后的归属计算。
+      </p>
+    </section>
+    {% endif %}
+
     <section class="card">
       <h2>发布日报</h2>
       <p class="small muted" style="margin-top:0">
@@ -229,6 +257,7 @@
             <span class="small muted">
               {{ i.created_at|dt }}<br>
               新增 {{ i.rows_added }} · 更正 {{ i.rows_corrected }} · 缺测/无效 {{ i.rows_missing }}
+              {% if i.rows_remapped %}· <strong>{{ i.rows_remapped }} 条按互换规则归入对站</strong>{% endif %}
               {% if i.dates %}· {{ i.dates|join(', ') }}{% endif %}
             </span>
           </span>

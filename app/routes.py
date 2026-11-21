@@ -124,6 +124,8 @@ async def upload_observations(
         f"已导入 {counts['added']} 条、更正 {counts['corrected']} 条，"
         f"未变 {counts.get('unchanged', 0)} 条"
     )
+    if counts.get("remapped"):
+        summary += f"；其中 {counts['remapped']} 条按站号互换规则归入对站"
     if outcome.errors:
         summary += f"；{len(outcome.errors)} 行缺测/无效"
     return RedirectResponse(
@@ -225,6 +227,7 @@ def station_page(
     unresolved_failure = db.latest_failure(station_id, selected, only_unresolved=True)
     coverage = db.observation_coverage(station_id, selected)
     imports = db.list_imports(station_id=station_id, limit=12)
+    swaps = db.list_swaps_for_station(station_id)
     thresholds = db.list_threshold_tables()
     message, error = _flash(request)
     return templates.TemplateResponse(
@@ -241,6 +244,7 @@ def station_page(
             unresolved_failure=unresolved_failure,
             coverage=coverage,
             imports=imports,
+            swaps=swaps,
             thresholds=thresholds,
             message=message,
             error=error,
@@ -253,6 +257,58 @@ def delete_station_page(station_id: int):
     if not services.delete_station(station_id):
         raise HTTPException(status_code=404, detail="站点不存在")
     return RedirectResponse(f"/?msg={_q('站点及其数据已删除')}", status_code=303)
+
+
+# --------------------------------------------------------------- 站号互换
+
+
+@router.get("/swaps", response_class=HTMLResponse)
+def swaps_page(request: Request):
+    stations = db.list_stations()
+    swaps = db.list_swaps()
+    message, error = _flash(request)
+    return templates.TemplateResponse(
+        request,
+        "swaps.html",
+        _ctx(
+            request,
+            active="swaps",
+            stations=stations,
+            swaps=swaps,
+            message=message,
+            error=error,
+        ),
+    )
+
+
+@router.post("/swaps")
+def create_swap_form(
+    station_a_id: int = Form(...),
+    station_b_id: int = Form(...),
+    start_at: str = Form(...),
+    end_at: str = Form(...),
+    note: str = Form(""),
+):
+    try:
+        outcome = services.register_station_swap(
+            station_a_id, station_b_id, start_at, end_at, note=note
+        )
+    except ServiceError as exc:
+        return RedirectResponse(f"/swaps?err={_q(str(exc))}", status_code=303)
+    swap = outcome["swap"]
+    pair_label = f"{swap['station_a_code']} ⇄ {swap['station_b_code']}"
+    if not outcome["created"]:
+        message = f"{pair_label} 在该时段的互换规则已存在，本次未重复生效"
+    else:
+        message = (
+            f"已登记站号互换 {pair_label}"
+            f"（{swap['start_at']} – {swap['end_at']}，含起点不含终点）："
+            f"时段内已有读数已互换 {swap['station_a_code']}→{swap['station_b_code']} "
+            f"{outcome['moved_a_to_b']} 条、"
+            f"{swap['station_b_code']}→{swap['station_a_code']} {outcome['moved_b_to_a']} 条；"
+            f"此后按原站号补传/重传的时段内读数将自动归到对站"
+        )
+    return RedirectResponse(f"/swaps?msg={_q(message)}", status_code=303)
 
 
 # --------------------------------------------------------------- 发布/查询
@@ -477,6 +533,35 @@ async def api_publish(request: Request):
         "level": outcome.result.level,
         "primary_pollutant": outcome.result.primary_pollutant,
         "previous_report_id": outcome.previous_report["id"] if outcome.previous_report else None,
+    }
+
+
+@api_router.get("/swaps")
+def api_list_swaps():
+    return {"ok": True, "swaps": db.list_swaps()}
+
+
+@api_router.post("/swaps")
+async def api_create_swap(request: Request):
+    payload = await _json_body(request)
+    try:
+        outcome = services.register_station_swap(
+            payload.get("station_a_id"),
+            payload.get("station_b_id"),
+            str(payload.get("start_at", "")),
+            str(payload.get("end_at", "")),
+            note=payload.get("note", "") or "",
+        )
+    except services.SwapOverlapError as exc:
+        return _api_error(exc, status=409)
+    except ServiceError as exc:
+        return _api_error(exc)
+    return {
+        "ok": True,
+        "created": outcome["created"],
+        "swap": outcome["swap"],
+        "moved_a_to_b": outcome["moved_a_to_b"],
+        "moved_b_to_a": outcome["moved_b_to_a"],
     }
 
 

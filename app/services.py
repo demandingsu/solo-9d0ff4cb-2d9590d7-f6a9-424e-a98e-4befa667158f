@@ -16,13 +16,17 @@ from .importer import (
     sha256_bytes,
 )
 from .thresholds import ThresholdError, ThresholdTable, parse_threshold_csv, table_from_snapshot
-from .utils import round_half_up, utc_now
+from .utils import HourFormatError, parse_utc_hour, round_half_up, utc_now
 
 
 class ServiceError(ValueError):
     def __init__(self, message: str, errors: list[str] | None = None):
         super().__init__(message)
         self.errors = errors or []
+
+
+class SwapOverlapError(ServiceError):
+    """互换时段与既有规则重叠，登记被拒绝。"""
 
 
 @dataclass
@@ -95,20 +99,27 @@ def import_observations(
     counts = {"total": parsed.rows_total, "valid": parsed.rows_valid, "missing": parsed.rows_missing}
     digest = sha256_bytes(content)
 
-    added = unchanged = corrected = 0
+    added = unchanged = corrected = remapped = 0
     with db.transaction() as conn:
+        # 整批导入共用同一套已提交互换规则：事务（BEGIN IMMEDIATE）内一次性读取，
+        # 登记事务与导入事务互斥，批内不会混用新旧两套规则。
+        swap_rules = db.fetch_swaps(conn)
         import_id = db.record_import(
             conn,
             station_id=station_id,
             filename=filename or "upload.csv",
             sha256=digest,
-            counts={**counts, "added": 0, "corrected": 0},
+            counts={**counts, "added": 0, "corrected": 0, "remapped": 0},
             dates=parsed.dates,
         )
         for item in parsed.observations:
+            # 网页与 API 仍按原站号接收；时段内的读数按观测时刻归到对站。
+            target_station_id = effective_station_id(swap_rules, station_id, item.observed_at)
+            if target_station_id != station_id:
+                remapped += 1
             outcome = db.upsert_observation(
                 conn,
-                station_id=station_id,
+                station_id=target_station_id,
                 observed_at=item.observed_at,
                 pollutant=item.pollutant,
                 value=item.value,
@@ -120,11 +131,21 @@ def import_observations(
                 corrected += 1
             else:
                 unchanged += 1
-        counts.update({"added": added, "corrected": corrected, "unchanged": unchanged})
+        counts.update(
+            {"added": added, "corrected": corrected, "unchanged": unchanged, "remapped": remapped}
+        )
         conn.execute(
-            "UPDATE imports SET rows_added = ?, rows_corrected = ?, rows_total = ?,"
-            " rows_valid = ?, rows_missing = ? WHERE id = ?",
-            (added, corrected, counts["total"], counts["valid"], counts["missing"], import_id),
+            "UPDATE imports SET rows_added = ?, rows_corrected = ?, rows_remapped = ?,"
+            " rows_total = ?, rows_valid = ?, rows_missing = ? WHERE id = ?",
+            (
+                added,
+                corrected,
+                remapped,
+                counts["total"],
+                counts["valid"],
+                counts["missing"],
+                import_id,
+            ),
         )
 
     return ImportOutcome(
@@ -248,6 +269,107 @@ def delete_station(station_id: int) -> bool:
                 "DELETE FROM observation_revisions WHERE station_id = ?", (station_id,)
             )
     return cursor.rowcount > 0
+
+
+# --------------------------------------------------------------- 站号互换
+
+
+def effective_station_id(rules: list[dict], station_id: int, observed_at: str) -> int:
+    """按已提交的互换规则，把（原站号, 观测时刻）映射到实际归属站点。
+
+    重叠规则在登记时已被拒绝，因此任一（站点, 时刻）至多命中一条规则。
+    """
+
+    for rule in rules:
+        if rule["start_at"] <= observed_at < rule["end_at"]:
+            if station_id == rule["station_a_id"]:
+                return rule["station_b_id"]
+            if station_id == rule["station_b_id"]:
+                return rule["station_a_id"]
+    return station_id
+
+
+def _parse_swap_hour(raw: str, label: str) -> str:
+    try:
+        hour, _naive = parse_utc_hour(str(raw or ""))
+    except HourFormatError as exc:
+        raise ServiceError(f"{label}：{exc}") from exc
+    return hour
+
+
+def register_station_swap(
+    station_a_id: object,
+    station_b_id: object,
+    start_at: str,
+    end_at: str,
+    note: str = "",
+) -> dict:
+    """登记一对站点在误标时段内的站号互换。
+
+    - 时段为 UTC 整点半开区间 [start_at, end_at)；
+    - 同一对站点同一时段重复登记只生效一次（幂等返回既有规则，不重复搬移）；
+    - 任一站的时段与其他规则重叠时拒绝登记；
+    - 规则写入与存量读数搬移在同一事务内完成，任一步失败整体回滚。
+    """
+
+    try:
+        a_id = int(station_a_id)  # type: ignore[arg-type]
+        b_id = int(station_b_id)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise ServiceError("站点编号无效") from exc
+    if a_id == b_id:
+        raise ServiceError("互换需要选择两个不同的站点")
+
+    stations_by_id = {s["id"]: s for s in db.list_stations()}
+    if a_id not in stations_by_id or b_id not in stations_by_id:
+        raise ServiceError("站点不存在，请刷新后重试")
+
+    start = _parse_swap_hour(start_at, "时段起点")
+    end = _parse_swap_hour(end_at, "时段终点")
+    if not start < end:
+        raise ServiceError("时段起点必须早于终点（含起点、不含终点）")
+
+    # 站对规范化（小 id 在前），互换语义对称，便于幂等判断与唯一约束。
+    lo, hi = (a_id, b_id) if a_id < b_id else (b_id, a_id)
+    note = (note or "").strip()[:200]
+
+    def _code(sid: int) -> str:
+        station = stations_by_id.get(sid)
+        return station["code"] if station else f"#{sid}"
+
+    with db.transaction() as conn:
+        existing = db.find_swap(conn, lo, hi, start, end)
+        if existing is not None:
+            # 重复登记同一对站和时段：只生效一次，直接返回既有规则。
+            swap_id = int(existing["id"])
+            moved_a_to_b = int(existing["moved_a_to_b"])
+            moved_b_to_a = int(existing["moved_b_to_a"])
+            created = False
+        else:
+            for rule in db.fetch_swaps(conn):
+                shared = {rule["station_a_id"], rule["station_b_id"]} & {lo, hi}
+                if not shared:
+                    continue
+                if rule["start_at"] < end and start < rule["end_at"]:
+                    station_hint = "、".join(_code(sid) for sid in sorted(shared))
+                    raise SwapOverlapError(
+                        f"站点 {station_hint} 的时段与既有规则重叠："
+                        f"{_code(rule['station_a_id'])} ⇄ {_code(rule['station_b_id'])} "
+                        f"{rule['start_at']} – {rule['end_at']}，登记被拒绝"
+                    )
+            swap_id = db.insert_swap(conn, lo, hi, start, end, note)
+            moved_a_to_b, moved_b_to_a = db.swap_observations(conn, lo, hi, start, end)
+            db.update_swap_counts(conn, swap_id, moved_a_to_b, moved_b_to_a)
+            created = True
+
+    swap = db.get_swap(swap_id)
+    assert swap is not None
+    return {
+        "created": created,
+        "swap": swap,
+        "moved_a_to_b": moved_a_to_b,
+        "moved_b_to_a": moved_b_to_a,
+    }
 
 
 # --------------------------------------------------------------- 演示数据

@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS imports (
     rows_missing INTEGER NOT NULL DEFAULT 0,
     rows_added INTEGER NOT NULL DEFAULT 0,
     rows_corrected INTEGER NOT NULL DEFAULT 0,
+    rows_remapped INTEGER NOT NULL DEFAULT 0,
     dates_json TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL
 );
@@ -107,6 +108,24 @@ CREATE TABLE IF NOT EXISTS publish_failures (
     resolved INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
 );
+
+-- 站号互换规则：网关误标时段内，station_a_id 与 station_b_id 的读数互相归属。
+-- 站对按较小 id 在前规范化存储；时段为 UTC 整点半开区间 [start_at, end_at)。
+CREATE TABLE IF NOT EXISTS station_swaps (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    station_a_id INTEGER NOT NULL REFERENCES stations(id) ON DELETE CASCADE,
+    station_b_id INTEGER NOT NULL REFERENCES stations(id) ON DELETE CASCADE,
+    start_at TEXT NOT NULL,
+    end_at TEXT NOT NULL,
+    moved_a_to_b INTEGER NOT NULL DEFAULT 0,
+    moved_b_to_a INTEGER NOT NULL DEFAULT 0,
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+
+-- 同一对站点同一时段只允许登记一次（重复登记幂等返回既有规则）。
+CREATE UNIQUE INDEX IF NOT EXISTS idx_station_swaps_unique
+    ON station_swaps(station_a_id, station_b_id, start_at, end_at);
 """
 
 
@@ -164,6 +183,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "resolved" not in columns:
         conn.execute(
             "ALTER TABLE publish_failures ADD COLUMN resolved INTEGER NOT NULL DEFAULT 0"
+        )
+
+    import_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(imports)").fetchall()
+    }
+    if "rows_remapped" not in import_columns:
+        conn.execute(
+            "ALTER TABLE imports ADD COLUMN rows_remapped INTEGER NOT NULL DEFAULT 0"
         )
 
 
@@ -389,8 +416,8 @@ def record_import(
     return int(
         conn.execute(
             "INSERT INTO imports (station_id, filename, sha256, rows_total, rows_valid,"
-            " rows_missing, rows_added, rows_corrected, dates_json, created_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?)",
+            " rows_missing, rows_added, rows_corrected, rows_remapped, dates_json, created_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (
                 station_id,
                 filename,
@@ -400,6 +427,7 @@ def record_import(
                 counts.get("missing", 0),
                 counts.get("added", 0),
                 counts.get("corrected", 0),
+                counts.get("remapped", 0),
                 json.dumps(dates),
                 utc_now_iso(),
             ),
@@ -622,3 +650,143 @@ def latest_report_for_station(station_id: int) -> dict | None:
             (station_id,),
         ).fetchone()
     return _report_row(row) if row else None
+
+
+# ---------------------------------------------------------------- 站号互换
+
+
+def insert_swap(
+    conn: sqlite3.Connection,
+    station_a_id: int,
+    station_b_id: int,
+    start_at: str,
+    end_at: str,
+    note: str,
+) -> int:
+    return int(
+        conn.execute(
+            "INSERT INTO station_swaps"
+            " (station_a_id, station_b_id, start_at, end_at, note, created_at)"
+            " VALUES (?,?,?,?,?,?)",
+            (station_a_id, station_b_id, start_at, end_at, note, utc_now_iso()),
+        ).lastrowid
+    )
+
+
+def update_swap_counts(
+    conn: sqlite3.Connection, swap_id: int, moved_a_to_b: int, moved_b_to_a: int
+) -> None:
+    conn.execute(
+        "UPDATE station_swaps SET moved_a_to_b = ?, moved_b_to_a = ? WHERE id = ?",
+        (moved_a_to_b, moved_b_to_a, swap_id),
+    )
+
+
+def find_swap(
+    conn: sqlite3.Connection,
+    station_a_id: int,
+    station_b_id: int,
+    start_at: str,
+    end_at: str,
+) -> dict | None:
+    """按规范化站对 + 时段精确查找既有规则（用于幂等登记）。"""
+
+    return row_to_dict(
+        conn.execute(
+            "SELECT * FROM station_swaps"
+            " WHERE station_a_id = ? AND station_b_id = ? AND start_at = ? AND end_at = ?",
+            (station_a_id, station_b_id, start_at, end_at),
+        ).fetchone()
+    )
+
+
+def fetch_swaps(conn: sqlite3.Connection) -> list[dict]:
+    """取出全部互换规则。导入时在事务内调用一次，保证整批使用同一套已提交规则。"""
+
+    rows = conn.execute("SELECT * FROM station_swaps ORDER BY start_at, id").fetchall()
+    return [dict(row) for row in rows]
+
+
+_SWAP_SELECT = (
+    "SELECT sw.*, sa.code AS station_a_code, sa.name AS station_a_name,"
+    " sb.code AS station_b_code, sb.name AS station_b_name"
+    " FROM station_swaps sw"
+    " JOIN stations sa ON sa.id = sw.station_a_id"
+    " JOIN stations sb ON sb.id = sw.station_b_id"
+)
+
+
+def get_swap(swap_id: int) -> dict | None:
+    with get_conn() as conn:
+        return row_to_dict(
+            conn.execute(_SWAP_SELECT + " WHERE sw.id = ?", (swap_id,)).fetchone()
+        )
+
+
+def list_swaps() -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            _SWAP_SELECT + " ORDER BY sw.start_at DESC, sw.id DESC"
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def list_swaps_for_station(station_id: int) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            _SWAP_SELECT
+            + " WHERE sw.station_a_id = ? OR sw.station_b_id = ?"
+            " ORDER BY sw.start_at DESC, sw.id DESC",
+            (station_id, station_id),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def swap_observations(
+    conn: sqlite3.Connection,
+    station_a_id: int,
+    station_b_id: int,
+    start_at: str,
+    end_at: str,
+) -> tuple[int, int]:
+    """把 [start_at, end_at) 内两站的已有观测互换归属，返回 (A→B 条数, B→A 条数)。
+
+    先整批取出并删除，再按对站重新插入：
+    - 保留各自的导入批次号（import_id 不变）；
+    - 两站同一小时同一污染物都存在时也不会触发唯一约束的瞬态冲突；
+    - 与规则登记在同一事务内执行，失败时整体回滚，读数归属保持不变。
+    """
+
+    def _collect(station_id: int) -> list[sqlite3.Row]:
+        return conn.execute(
+            "SELECT id, observed_at, pollutant, value, import_id FROM observations"
+            " WHERE station_id = ? AND observed_at >= ? AND observed_at < ?",
+            (station_id, start_at, end_at),
+        ).fetchall()
+
+    rows_a = _collect(station_a_id)
+    rows_b = _collect(station_b_id)
+    if not rows_a and not rows_b:
+        return 0, 0
+    ids = [int(row["id"]) for row in (*rows_a, *rows_b)]
+    conn.execute(
+        f"DELETE FROM observations WHERE id IN ({','.join('?' for _ in ids)})",
+        ids,
+    )
+    now = utc_now_iso()
+    moved = [
+        *(
+            (station_b_id, row["observed_at"], row["pollutant"], row["value"], row["import_id"], now)
+            for row in rows_a
+        ),
+        *(
+            (station_a_id, row["observed_at"], row["pollutant"], row["value"], row["import_id"], now)
+            for row in rows_b
+        ),
+    ]
+    conn.executemany(
+        "INSERT INTO observations (station_id, observed_at, pollutant, value, import_id, updated_at)"
+        " VALUES (?,?,?,?,?,?)",
+        moved,
+    )
+    return len(rows_a), len(rows_b)

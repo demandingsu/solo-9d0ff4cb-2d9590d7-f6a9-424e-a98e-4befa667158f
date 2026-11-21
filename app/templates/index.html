@@ -117,7 +117,7 @@
             <strong>{{ i.station_code }}</strong> {{ i.filename or 'upload.csv' }}<br>
             <span class="small muted">
               {{ i.created_at|dt }} · 新增 {{ i.rows_added }} · 更正 {{ i.rows_corrected }} ·
-              缺测/无效 {{ i.rows_missing }}
+              缺测/无效 {{ i.rows_missing }}{% if i.rows_remapped %} · {{ i.rows_remapped }} 条归入对站{% endif %}
             </span>
           </span>
         </li>
