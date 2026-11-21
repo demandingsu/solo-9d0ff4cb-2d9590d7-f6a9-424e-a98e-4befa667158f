@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}演示{% endblock %}
+{% block content %}
+<h1>演示与自测</h1>
+<p class="lede">
+  不写代码也能走通完整流程。以下脚本可直接复制到终端，也可在浏览器中一键生成演示数据。
+</p>
+
+<section class="card">
+  <div class="card-head">
+    <h2>一键演示数据</h2>
+    <form method="post" action="/demo" data-busy="1">
+      <button class="btn" type="submit">生成演示站点与观测</button>
+    </form>
+  </div>
+  <p class="small muted" style="margin-top:0">
+    将创建 <span class="mono">DEMO01</span>（三天完整数据）与 <span class="mono">DEMO02</span>（中间一天缺测 11 小时），
+    日期为最近三个已结束的 UTC 日，可分别验证成功发布与失败保留。
+  </p>
+  <ol class="small">
+    <li>打开 <a href="/">概览</a>，进入 DEMO01 站点页，选择完整日期，发布日报 → 得到 v1。</li>
+    <li>再次发布同一天（可修改备注）→ 得到 v2，v1 标记为历史，阈值快照各自冻结。</li>
+    <li>进入 DEMO02 站点页，选择缺测日期，发布 → 被拒绝，并显示每项缺测原因。</li>
+    <li>为 DEMO02 补传缺失小时后重新发布 → 成功，原失败记录仍可见。</li>
+  </ol>
+</section>
+
+<div class="grid two">
+  <section class="card">
+    <h2>curl：登记站点 + 上传观测 + 发布</h2>
+    <pre id="curl-demo"># 1) 创建站点
+curl -s -X POST http://localhost:8000/api/stations \
+  -H 'Content-Type: application/json' \
+  -d '{"code":"BJ001","name":"城东站","latitude":39.9042,"longitude":116.4074}'
+
+# 2) 上传小时数据（宽表，UTC 整点）
+curl -s -X POST http://localhost:8000/api/stations/1/observations \
+  -F 'file=@samples/observations_complete.csv'
+
+# 3) 发布指定 UTC 日
+curl -s -X POST http://localhost:8000/api/reports \
+  -H 'Content-Type: application/json' \
+  -d '{"station_id":1,"report_date":"2026-11-20"}'
+
+# 4) 查询当前版本
+curl -s 'http://localhost:8000/api/reports?station=BJ001&report_date=2026-11-20'</pre>
+    <button class="btn ghost small" type="button" data-copy="#curl-demo">复制命令</button>
+  </section>
+
+  <section class="card">
+    <h2>AQI 分级</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>IAQI</th><th>级别</th><th>提示</th></tr></thead>
+        <tbody>
+          {% for upper, label, color, advice in aqi_levels %}
+          <tr>
+            <td class="num">{{ ('≤ ' ~ upper) if upper < 500 else ('> ' ~ aqi_levels[-2][0]) }}</td>
+            <td><span class="badge" style="background:{{ color }}1a; color:{{ color }}">{{ label }}</span></td>
+            <td class="small muted">{{ advice }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+</div>
+
+<section class="card">
+  <h2>判定口径</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>污染物</th><th>日统计量</th><th>最少数据</th><th>缺测处理</th></tr></thead>
+      <tbody>
+        {% for key in pollutant_order %}
+        {% set spec = pollutant_specs[key] %}
+        <tr>
+          <td><strong>{{ spec.label }}</strong> <span class="small muted">{{ spec.chinese_name }}</span></td>
+          <td>{{ spec.method_label }}</td>
+          <td>{% if spec.method == 'max_rolling_mean' %}至少 1 个完整 8 小时连续窗口{% else %}≥ {{ spec.required_hours }} 个有效小时{% endif %}</td>
+          <td class="small muted">{% if spec.method == 'max_rolling_mean' %}窗口内任一小时缺测即不构成完整窗口；不足一个窗口则整项缺测{% else %}不足阈值则整项缺测{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="small muted" style="margin-bottom:0">
+    六项中任一项缺测 → 拒绝发布。发布成功时取最大 IAQI 为首要污染物（AQI ≤ 50 不标首要污染物），
+    并将读数与阈值表快照一并写入该版本。失败不会删除或覆盖上一份完整日报。
+  </p>
+</section>
+{% endblock %}

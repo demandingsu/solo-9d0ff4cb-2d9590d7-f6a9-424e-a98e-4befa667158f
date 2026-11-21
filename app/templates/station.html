@@ -1,0 +1,255 @@
+{% extends "base.html" %}
+{% block title %}{{ station.code }} · 站点{% endblock %}
+{% block content %}
+<div class="spread" style="margin-bottom:10px">
+  <div>
+    <h1>{{ station.code }} <span class="muted" style="font-weight:400; font-size:17px">{{ station.name }}</span></h1>
+    <p class="small muted mono" style="margin:0">
+      纬度 {{ '%.5f'|format(station.latitude) }} · 经度 {{ '%.5f'|format(station.longitude) }} · 更新于 {{ station.updated_at|dt }}
+    </p>
+  </div>
+  <div class="row">
+    <a class="btn ghost small" href="/upload">继续上传</a>
+    <form method="post" action="/stations/{{ station.id }}/delete"
+          onsubmit="return confirm('删除站点将同时删除其观测、日报与失败记录，确定？')">
+      <button class="btn danger small" type="submit">删除站点</button>
+    </form>
+  </div>
+</div>
+
+<section class="card">
+  <form method="get" action="/stations/{{ station.id }}" class="inline-form">
+    <div class="field">
+      <label for="date">日报日期（UTC）</label>
+      <input id="date" type="date" name="date" value="{{ selected_date }}" max="{{ today }}">
+    </div>
+    <button class="btn ghost" type="submit">切换日期</button>
+    <span class="small muted">按 UTC [00:00, 24:00) 切分，不随本地时区偏移</span>
+  </form>
+</section>
+
+<div class="grid side">
+  <div>
+    {% if current %}
+    <section class="card">
+      <div class="card-head">
+        <div>
+          <h2>{{ selected_date }} 已发布日报</h2>
+          <p class="small muted" style="margin:0">
+            版本 v{{ current.version }} · 发布 {{ current.created_at|dt }} ·
+            阈值 #{{ current.threshold_table_id or '—' }}（<span class="mono">{{ current.threshold_hash[:12] }}…</span>）
+          </p>
+        </div>
+        <span class="badge {{ 'green' if current.is_current else 'gray' }}">{{ '当前版本' if current.is_current else '历史版本' }}</span>
+      </div>
+      {% if unresolved_failure %}
+      <div class="flash warn" style="margin:0 0 14px">
+        最近一次发布尝试（{{ unresolved_failure.created_at|dt }}）被拒绝，当前仍展示 {{ current.created_at|dt }} 发布的上一份完整日报。
+        <ul class="timeline" style="margin-top:8px">
+          {% for reason in unresolved_failure.reasons %}<li><span class="dot err"></span><span>{{ reason }}</span></li>{% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+      {% set level_index = {'优': 1, '良': 2, '轻度污染': 3, '中度污染': 4, '重度污染': 5, '严重污染': 6}.get(current.aqi_level, 3) %}
+      <div class="aqi-hero" style="margin-bottom:16px">
+        <div class="aqi-big lvl-{{ level_index }}">{{ current.max_iaqi }}</div>
+        <div class="aqi-meta">
+          <div class="level">{{ current.aqi_level }}</div>
+          <div class="small muted">最大分指数项：<strong>{{ current.primary_pollutant or '—' }}</strong>{% if current.max_iaqi <= 50 %}（AQI ≤ 50，按标准可称“无首要污染物”）{% endif %}</div>
+          <div class="advice">{{ aqi_level(current.max_iaqi)[2] }}</div>
+          <div class="row" style="margin-top:10px">
+            <a class="btn small" href="/reports/{{ current.id }}">查看完整日报</a>
+            <a class="btn ghost small" href="/reports/{{ current.id }}/readings.json">读数 JSON</a>
+          </div>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>污染物</th><th>口径</th><th class="num">有效小时</th><th class="num">日值</th><th class="num">IAQI</th><th>说明</th></tr>
+          </thead>
+          <tbody>
+            {% for key in pollutant_order %}
+            {% set p = current.readings.pollutants.get(key) %}
+            {% if p %}
+            <tr>
+              <td><strong>{{ p.label }}</strong> <span class="small muted">{{ p.name }}</span></td>
+              <td class="small">{{ p.method_label }}</td>
+              <td class="num">{{ p.valid_hours }}/24</td>
+              <td class="num">{{ p.daily_value|num }} <span class="small muted">{{ p.unit }}</span></td>
+              <td class="num"><strong>{{ p.iaqi }}</strong></td>
+              <td class="small muted">{{ p.threshold_basis or '—' }}</td>
+            </tr>
+            {% endif %}
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+    {% elif failure %}
+    <section class="card" style="border-color:#f0dcae; background:#fffdf7">
+      <div class="card-head">
+        <h2>{{ selected_date }} 最近一次发布失败</h2>
+        <span class="badge amber">未发布</span>
+      </div>
+      <p class="small muted" style="margin-top:0">
+        失败记录 {{ failure.created_at|dt }}。缺项不发布；若该日期此前存在完整日报，它仍然是当前版本。
+      </p>
+      <ul class="timeline">
+        {% for reason in failure.reasons %}
+        <li><span class="dot err"></span><span>{{ reason }}</span></li>
+        {% endfor %}
+      </ul>
+    </section>
+    {% else %}
+    <section class="card">
+      <h2>{{ selected_date }} 尚未发布</h2>
+      <p class="small muted">该 UTC 日没有日报版本，也没有失败记录。上传观测后可直接发布。</p>
+    </section>
+    {% endif %}
+
+    <section class="card">
+      <h2>该日数据覆盖</h2>
+      <p class="small muted" style="margin-top:0">每格代表一小时，深色为有观测。悬停查看数值。</p>
+      {% if coverage %}
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>污染物</th><th class="num">有效小时</th><th class="num">要求</th><th style="width:46%">覆盖（UTC 0–23 时）</th><th>状态</th></tr>
+          </thead>
+          <tbody>
+            {% for key in pollutant_order %}
+            {% set spec = pollutant_specs[key] %}
+            {% set cov = coverage.get(key) %}
+            {% set count = cov.count if cov else 0 %}
+            <tr>
+              <td><strong>{{ spec.label }}</strong></td>
+              <td class="num">{{ count }}/24</td>
+              <td class="num">
+                {% if spec.method == 'max_rolling_mean' %}
+                  {% set windows = cov.windows if cov else 0 %}≥1 个 8h 窗口（{{ windows }}）
+                {% else %}≥{{ spec.required_hours }}{% endif %}
+              </td>
+              <td>
+                <div class="hourgrid">
+                  {% for h in range(24) %}
+                  <span class="cell {{ 'has' if cov and h in cov.hours else '' }}"
+                        data-tip="{{ '%02d:00'|format(h) }}{% if cov and h in cov.hours %} · {{ cov.hours[h]|num }} {{ pollutant_specs[key].unit }}{% else %} · 缺测{% endif %}"></span>
+                  {% endfor %}
+                </div>
+                <div class="hour-axis"><span>00</span><span>06</span><span>12</span><span>18</span><span>23</span></div>
+              </td>
+              <td>
+                {% if spec.method == 'max_rolling_mean' %}
+                  {% set windows = cov.windows if cov else 0 %}
+                  <span class="badge {{ 'green' if windows >= 1 else 'red' }}">
+                    {{ '可计算（' ~ windows ~ ' 个窗口）' if windows >= 1 else '缺测' }}
+                  </span>
+                {% else %}
+                  <span class="badge {{ 'green' if count >= spec.required_hours else 'red' }}">{{ '达标' if count >= spec.required_hours else '缺测' }}</span>
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <div class="empty">该 UTC 日没有任何观测数据。</div>
+      {% endif %}
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>版本历史</h2><span class="small muted">同日重新发布会生成新版本</span></div>
+      {% if versions %}
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>版本</th><th class="num">AQI</th><th>级别</th><th>首要污染物</th><th>阈值哈希</th><th>发布时间</th><th>状态</th><th></th></tr></thead>
+          <tbody>
+            {% for v in versions %}
+            <tr>
+              <td>v{{ v.version }}</td>
+              <td class="num">{{ v.max_iaqi }}</td>
+              <td>{{ v.aqi_level }}</td>
+              <td>{{ v.primary_pollutant or '—' }}</td>
+              <td class="mono small">{{ v.threshold_hash[:12] }}…</td>
+              <td class="small nowrap">{{ v.created_at|dt }}</td>
+              <td>{% if v.is_current %}<span class="badge green">当前</span>{% else %}<span class="badge gray">历史</span>{% endif %}</td>
+              <td><a class="btn ghost small" href="/reports/{{ v.id }}">查看</a></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <p class="small muted" style="margin:0">暂无已发布版本。</p>
+      {% endif %}
+    </section>
+  </div>
+
+  <aside>
+    <section class="card">
+      <h2>发布日报</h2>
+      <p class="small muted" style="margin-top:0">
+        发布时冻结本次读数与所选阈值表。任一项缺测将拒绝发布，已存在的完整日报保持可用。
+      </p>
+      <form method="post" action="/publish" class="stack" data-busy="1">
+        <input type="hidden" name="station_id" value="{{ station.id }}">
+        <div class="field">
+          <label for="report_date">UTC 日期</label>
+          <input id="report_date" type="date" name="report_date" value="{{ selected_date }}" max="{{ today }}" required>
+        </div>
+        <div class="field">
+          <label for="threshold_table_id">阈值表</label>
+          <select id="threshold_table_id" name="threshold_table_id">
+            {% for t in thresholds %}
+            <option value="{{ t.id }}" {{ 'selected' if current and current.threshold_table_id == t.id else '' }}>
+              #{{ t.id }} {{ t.name }}（{{ t.content_hash[:8] }}…）
+            </option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="field">
+          <label for="note">备注（写入版本）</label>
+          <input id="note" type="text" name="note" maxlength="200" placeholder="如：补传 06–09 时数据">
+        </div>
+        <button class="btn" type="submit">计算并发布</button>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2>该站导入记录</h2>
+      {% if imports %}
+      <ul class="timeline">
+        {% for i in imports %}
+        <li>
+          <span class="dot {{ 'warn' if i.rows_missing else '' }}"></span>
+          <span>
+            <strong>{{ i.filename or 'upload.csv' }}</strong><br>
+            <span class="small muted">
+              {{ i.created_at|dt }}<br>
+              新增 {{ i.rows_added }} · 更正 {{ i.rows_corrected }} · 缺测/无效 {{ i.rows_missing }}
+              {% if i.dates %}· {{ i.dates|join(', ') }}{% endif %}
+            </span>
+          </span>
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="small muted" style="margin:0">暂无导入。</p>
+      {% endif %}
+      <p class="small" style="margin-bottom:0"><a href="/upload">导入更多数据 →</a></p>
+    </section>
+
+    <section class="card">
+      <h2>API</h2>
+      <p class="small muted" style="margin-top:0">同一操作也可通过 JSON 接口调用：</p>
+      <pre>POST /api/reports
+{"station_id": {{ station.id }},
+ "report_date": "{{ selected_date }}",
+ "threshold_table_id": {{ thresholds[0].id if thresholds else 'null' }}}</pre>
+      <p class="small" style="margin-bottom:0"><a href="/docs" target="_blank" rel="noopener">OpenAPI 文档 →</a></p>
+    </section>
+  </aside>
+</div>
+{% endblock %}

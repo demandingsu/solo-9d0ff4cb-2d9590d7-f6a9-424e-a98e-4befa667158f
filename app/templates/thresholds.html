@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}阈值表{% endblock %}
+{% block content %}
+<h1>阈值表</h1>
+<p class="lede">
+  阈值按污染物与时段分段，浓度区间线性插值到指数区间。要求每个污染物覆盖 0 起点、断点连续且指数单调递增。
+</p>
+
+<div class="grid side">
+  <div>
+    {% if not record %}
+    <section class="card">
+      <h2>暂无阈值表</h2>
+      <p class="small muted" style="margin-top:0">
+        上传一份阈值 CSV 后即可查看分段规则。列：<span class="mono">pollutant, period,
+        concentration_low, concentration_high, index_low, index_high, unit, note</span>
+      </p>
+      <a class="btn" href="/upload">上传阈值表</a>
+      <a class="btn ghost" href="/thresholds/default.csv">下载默认模板</a>
+    </section>
+    {% else %}
+    <section class="card">
+      <div class="card-head">
+        <h2>{{ record.name }}</h2>
+        <span class="badge">#{{ record.id }}</span>
+      </div>
+      <p class="small muted" style="margin-top:0">
+        内容哈希 <span class="mono">{{ record.content_hash }}</span> · 创建 {{ record.created_at|dt }}
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>污染物</th><th>时段</th><th class="num">浓度下限</th><th class="num">浓度上限</th><th class="num">指数下限</th><th class="num">指数上限</th><th>单位</th><th>备注</th></tr>
+          </thead>
+          <tbody>
+            {% for key in snapshot.pollutants %}
+              {% for row in snapshot.pollutants[key] %}
+              <tr>
+                <td><strong>{{ key }}</strong>{% if loop.first %} <span class="small muted">{{ pollutant_specs[key].chinese_name }}</span>{% endif %}</td>
+                <td>{{ period_labels.get(row.period, row.period) }}</td>
+                <td class="num">{{ row.concentration_low|num }}</td>
+                <td class="num">{{ row.concentration_high|num }}</td>
+                <td class="num">{{ row.index_low|num }}</td>
+                <td class="num">{{ row.index_high|num }}</td>
+                <td class="small">{{ row.unit }}</td>
+                <td class="small muted">{{ row.note }}</td>
+              </tr>
+              {% endfor %}
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>原始 CSV</h2>
+        <button class="btn ghost small" type="button" data-copy="#threshold-csv">复制</button>
+      </div>
+      <pre id="threshold-csv">{{ csv_text }}</pre>
+    </section>
+    {% endif %}
+  </div>
+
+  <aside>
+    {% if record %}
+    <section class="card">
+      <h2>快照</h2>
+      <p class="small muted" style="margin-top:0">
+        发布日报时会把当前阈值表整体写入该日报版本，后续修改阈值不会改变历史日报口径。
+      </p>
+      <a class="btn ghost small" href="/thresholds/{{ record.id }}/snapshot.json">下载快照 JSON</a>
+    </section>
+    {% endif %}
+
+    <section class="card">
+      <h2>切换阈值表</h2>
+      {% if tables %}
+      <ul class="timeline">
+        {% for t in tables %}
+        <li>
+          <span class="dot {{ 'warn' if t.id != (record.id if record else None) else '' }}"></span>
+          <span>
+            <a href="/thresholds?table_id={{ t.id }}">#{{ t.id }} {{ t.name }}</a>
+            {% if record and t.id == record.id %}<span class="badge green">查看中</span>{% endif %}<br>
+            <span class="small muted mono">{{ t.content_hash[:16] }}… · {{ t.created_at|dt }}</span>
+          </span>
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="small muted">暂无阈值表。</p>
+      {% endif %}
+      <p style="margin-bottom:0"><a href="/upload">上传新阈值表 →</a></p>
+    </section>
+
+    <section class="card">
+      <h2>校验规则</h2>
+      <ul class="small muted" style="margin:0; padding-left:18px">
+        <li>必需列：pollutant、period、concentration_low/high、index_low/high</li>
+        <li>每段 0 ≤ 浓度下限 &lt; 上限；指数下限 &lt; 上限且 ≤ 500</li>
+        <li>首个分段浓度与指数下限必须为 0</li>
+        <li>相邻分段断点必须首尾相接</li>
+        <li>六种污染物（PM2.5、PM10、O₃、SO₂、NO₂、CO）缺一不可</li>
+        <li>超出最高浓度断点的读数按最高段指数封顶报告</li>
+      </ul>
+    </section>
+  </aside>
+</div>
+{% endblock %}

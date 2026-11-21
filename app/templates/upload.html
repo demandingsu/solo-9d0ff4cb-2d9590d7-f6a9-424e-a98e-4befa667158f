@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% block title %}上传数据{% endblock %}
+{% block content %}
+<h1>上传数据</h1>
+<p class="lede">三步完成一次导入：登记站点坐标 → 上传小时污染物 CSV → 在站点页发布日报。</p>
+
+<div class="grid two">
+  <section class="card">
+    <h2>1. 站点坐标</h2>
+    <p class="small muted" style="margin-top:0">
+      编码用于关联观测文件；若 CSV 中带有站点编码列，必须与所选站点一致。
+    </p>
+    <form method="post" action="/upload/station" class="stack" data-busy="1">
+      <div class="row">
+        <div class="field" style="flex:1">
+          <label for="code">站点编码 *</label>
+          <input id="code" type="text" name="code" required maxlength="40" placeholder="如 BJ001">
+        </div>
+        <div class="field" style="flex:2">
+          <label for="name">站点名称</label>
+          <input id="name" type="text" name="name" maxlength="80" placeholder="如 城东监测站">
+        </div>
+      </div>
+      <div class="row">
+        <div class="field" style="flex:1">
+          <label for="latitude">纬度 *</label>
+          <input id="latitude" type="number" name="latitude" step="any" min="-90" max="90" required placeholder="39.9042">
+        </div>
+        <div class="field" style="flex:1">
+          <label for="longitude">经度 *</label>
+          <input id="longitude" type="number" name="longitude" step="any" min="-180" max="180" required placeholder="116.4074">
+        </div>
+      </div>
+      <button class="btn" type="submit">保存站点</button>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>3. 阈值表</h2>
+    <p class="small muted" style="margin-top:0">
+      上传含浓度断点与指数断点的 CSV。系统会为每次上传保存独立快照，发布日报时冻结引用。
+    </p>
+    <form method="post" action="/upload/thresholds" enctype="multipart/form-data" class="stack" data-busy="1">
+      <div class="field">
+        <label for="threshold-file">阈值 CSV *</label>
+        <input id="threshold-file" type="file" name="file" accept=".csv,text/csv" required>
+        <span class="help" data-file-for="threshold-file"></span>
+      </div>
+      <button class="btn ghost" type="submit">上传并校验阈值</button>
+    </form>
+    <p class="small" style="margin-bottom:0">
+      列：<span class="mono">pollutant, period, concentration_low, concentration_high, index_low, index_high, unit, note</span><br>
+      <a href="/thresholds/default.csv">下载默认阈值模板</a> · <a href="/thresholds">查看已有阈值表</a>
+    </p>
+  </section>
+</div>
+
+<section class="card">
+  <h2>2. 小时污染物 CSV</h2>
+  <p class="small muted" style="margin-top:0">
+    支持宽表（<span class="mono">time, PM2.5, PM10, O₃, SO₂, NO₂, CO</span>）或长表
+    （<span class="mono">time, pollutant, value</span>）。时间必须对齐整点；无时区的时间按 UTC 解释。
+    空值和 NA 视为缺测，不会写入数据库。
+  </p>
+  {% if stations %}
+  <form method="post" action="/upload/observations" enctype="multipart/form-data" class="stack" data-busy="1">
+    <div class="row" style="align-items:end">
+      <div class="field" style="flex:1; min-width:220px">
+        <label for="observation-station">目标站点 *</label>
+        <select id="observation-station" name="station_id" required>
+          {% for s in stations %}
+          <option value="{{ s.id }}" data-latest="{{ s.latest_observation or '' }}">
+            {{ s.code }} · {{ s.name }}（{{ '%.3f'|format(s.latitude) }}, {{ '%.3f'|format(s.longitude) }}）
+          </option>
+          {% endfor %}
+        </select>
+        <span class="help" id="station-hint">
+          {% set first = stations[0] %}
+          {{ '该站最新观测：' + (first.latest_observation|dt) if first.latest_observation else '该站暂无观测数据' }}
+        </span>
+      </div>
+      <div class="field" style="flex:2; min-width:240px">
+        <label for="observation-file">观测 CSV *</label>
+        <input id="observation-file" type="file" name="file" accept=".csv,text/csv" required>
+        <span class="help" data-file-for="observation-file"></span>
+      </div>
+      <button class="btn" type="submit">导入观测</button>
+    </div>
+  </form>
+  {% else %}
+  <div class="empty">先在上方登记一个站点，才能导入观测数据。</div>
+  {% endif %}
+
+  <details style="margin-top:14px">
+    <summary>CSV 格式示例</summary>
+    <pre>time,PM2.5,PM10,O3,SO2,NO2,CO
+2026-11-20T00:00:00Z,38,72,42,12,38,1.1
+2026-11-20T01:00:00Z,41,78,45,11,41,1.2
+2026-11-20T02:00:00Z,NA,80,48,10,39,1.0</pre>
+    <p class="small muted" style="margin-bottom:0">
+      单位：PM2.5 / PM10 / O₃ / SO₂ / NO₂ 为 µg/m³，CO 为 mg/m³。重复导入同一小时同一污染物会覆盖旧值，
+      差异值进入更正记录，不会累加。
+    </p>
+  </details>
+</section>
+
+<section class="card">
+  <h2>已有阈值表</h2>
+  {% if thresholds %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>#</th><th>名称</th><th>内容哈希</th><th>创建时间</th><th></th></tr></thead>
+      <tbody>
+        {% for t in thresholds %}
+        <tr>
+          <td class="num">{{ t.id }}</td>
+          <td>{{ t.name }}</td>
+          <td class="mono small">{{ t.content_hash[:16] }}…</td>
+          <td class="small nowrap">{{ t.created_at|dt }}</td>
+          <td><a class="btn ghost small" href="/thresholds?table_id={{ t.id }}">查看</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="small muted">暂无阈值表。</p>
+  {% endif %}
+</section>
+{% endblock %}

@@ -1,0 +1,11 @@
+# 运行产物
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+data/*.db
+data/*.db-wal
+data/*.db-shm
+.DS_Store

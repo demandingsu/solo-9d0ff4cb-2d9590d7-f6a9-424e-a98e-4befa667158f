@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+{% block title %}概览{% endblock %}
+{% block content %}
+<h1>空气质量日报工作台</h1>
+<p class="lede">
+  上传站点坐标与小时污染物 CSV，按 UTC 日计算 PM2.5 / PM10 24 小时均值、O₃ 连续 8 小时最大均值，
+  及其余污染物小时分指数；任一项缺测即拒绝发布，并保留上一份完整日报。
+</p>
+
+<div class="grid three" style="margin-bottom:18px">
+  <div class="stat">
+    <div class="k">站点</div>
+    <div class="v">{{ stations|length }}</div>
+    <div class="u">已登记监测站点</div>
+  </div>
+  <div class="stat">
+    <div class="k">日报版本</div>
+    <div class="v">{{ reports|length }}</div>
+    <div class="u">最近记录（含历史版本）</div>
+  </div>
+  <div class="stat">
+    <div class="k">阈值表快照</div>
+    <div class="v">{{ thresholds|length }}</div>
+    <div class="u">每次上传均独立留存</div>
+  </div>
+</div>
+
+<div class="grid side">
+  <div>
+    <div class="card">
+      <div class="card-head">
+        <h2>最近日报</h2>
+        <a href="/reports" class="small">全部日报 →</a>
+      </div>
+      {% if reports %}
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>日期</th><th>站点</th><th class="num">AQI</th><th>级别</th><th>首要污染物</th><th>版本</th><th>发布时间</th></tr>
+          </thead>
+          <tbody>
+            {% for r in reports %}
+            <tr>
+              <td class="nowrap"><a href="/reports/{{ r.id }}">{{ r.report_date }}</a></td>
+              <td><a href="/stations/{{ r.station_id }}">{{ r.station_code }}</a> <span class="muted small">{{ r.station_name }}</span></td>
+              <td class="num">{{ r.max_iaqi }}</td>
+              <td>{{ r.aqi_level }}</td>
+              <td>{{ r.primary_pollutant or '—' }}</td>
+              <td>v{{ r.version }}{% if r.is_current %} <span class="badge green">当前</span>{% else %} <span class="badge gray">历史</span>{% endif %}</td>
+              <td class="small muted nowrap">{{ r.created_at|dt }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <div class="empty">
+        还没有日报。先 <a href="/upload">登记站点并上传观测</a>，或 <a href="/demo/manual">运行演示</a>。
+      </div>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>站点</h2>
+        <a href="/upload" class="small">登记站点 →</a>
+      </div>
+      {% if stations %}
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>编码</th><th>名称</th><th>经纬度</th><th class="num">观测记录</th><th>最新观测</th><th>最新日报</th><th></th></tr>
+          </thead>
+          <tbody>
+            {% for s in stations %}
+            <tr>
+              <td class="mono">{{ s.code }}</td>
+              <td>{{ s.name }}</td>
+              <td class="mono small">{{ '%.4f'|format(s.latitude) }}, {{ '%.4f'|format(s.longitude) }}</td>
+              <td class="num">{{ s.observation_count }}</td>
+              <td class="small nowrap">{{ s.latest_observation|dt }}</td>
+              <td class="small nowrap">{{ s.latest_report_date or '—' }}</td>
+              <td><a class="btn ghost small" href="/stations/{{ s.id }}">打开</a></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <div class="empty">尚无站点。</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <aside>
+    <div class="card">
+      <h2>快速开始</h2>
+      <form method="post" action="/demo" data-busy="1">
+        <p class="small muted" style="margin-top:0">
+          生成两个演示站点（一个完整、一个缺测）及近三天的观测数据，可直接体验发布与失败保留。
+        </p>
+        <button class="btn" type="submit" style="width:100%">一键生成演示数据</button>
+      </form>
+      <p class="small muted" style="margin-bottom:0">
+        也可以手动走完整流程：<a href="/upload">上传页面</a> → 选择站点 → 发布日报。
+      </p>
+    </div>
+
+    <div class="card">
+      <h2>最近导入</h2>
+      {% if imports %}
+      <ul class="timeline">
+        {% for i in imports %}
+        <li>
+          <span class="dot {{ 'warn' if i.rows_missing else '' }}"></span>
+          <span>
+            <strong>{{ i.station_code }}</strong> {{ i.filename or 'upload.csv' }}<br>
+            <span class="small muted">
+              {{ i.created_at|dt }} · 新增 {{ i.rows_added }} · 更正 {{ i.rows_corrected }} ·
+              缺测/无效 {{ i.rows_missing }}
+            </span>
+          </span>
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="small muted" style="margin:0">暂无导入记录。</p>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      <h2>计算口径</h2>
+      <ul class="small" style="margin:0; padding-left:18px; color:var(--ink-soft)">
+        <li>PM2.5 / PM10：24 小时算术均值，至少 18 个有效小时</li>
+        <li>O₃：连续 8 小时滑动均值的日最大值，须至少 1 个完整窗口</li>
+        <li>SO₂ / NO₂ / CO：小时分指数的日最大值，至少 18 个有效小时</li>
+        <li>任一项不满足 → 不发布；上一份完整日报保持为当前版本</li>
+        <li>补传或更正后再次发布 → 版本号 +1，并记录所引用的阈值快照</li>
+      </ul>
+    </div>
+  </aside>
+</div>
+{% endblock %}

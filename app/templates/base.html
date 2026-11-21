@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ app_name }}{% endblock %} · {{ app_name }}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <a href="/" class="brand-link">
+      <span class="brand-mark" aria-hidden="true">AQ</span>
+      <span>
+        <strong>{{ app_name }}</strong>
+        <small>按站点与 UTC 日 · 采样发布系统</small>
+      </span>
+    </a>
+  </div>
+  <nav class="mainnav" aria-label="主导航">
+    <a href="/" class="{{ 'on' if active == 'dashboard' }}">概览</a>
+    <a href="/upload" class="{{ 'on' if active == 'upload' }}">上传</a>
+    <a href="/thresholds" class="{{ 'on' if active == 'thresholds' }}">阈值</a>
+    <a href="/reports" class="{{ 'on' if active == 'reports' }}">日报</a>
+    <a href="/demo/manual" class="{{ 'on' if active == 'demo' }}">演示</a>
+  </nav>
+  <div class="clock" id="utc-clock" aria-live="off">UTC</div>
+</header>
+
+<main class="page">
+  {% if message %}<div class="flash ok" role="status">{{ message }}</div>{% endif %}
+  {% if error %}<div class="flash err" role="alert">{{ error }}</div>{% endif %}
+  {% if warnings %}
+    {% for warning in warnings %}<div class="flash warn">{{ warning }}</div>{% endfor %}
+  {% endif %}
+  {% block content %}{% endblock %}
+</main>
+
+<footer class="footer">
+  <span>{{ app_name }} v{{ app_version }}</span>
+  <span>数据以 UTC 日切分 · 缺项不发布 · 每次发布冻结读数与阈值快照</span>
+</footer>
+<script src="/static/app.js" defer></script>
+</body>
+</html>

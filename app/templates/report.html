@@ -1,0 +1,176 @@
+{% extends "base.html" %}
+{% block title %}{{ report.station_code }} {{ report.report_date }} 日报{% endblock %}
+{% block content %}
+{% set level_index = {'优': 1, '良': 2, '轻度污染': 3, '中度污染': 4, '重度污染': 5, '严重污染': 6}.get(report.aqi_level, 3) %}
+<div class="spread" style="margin-bottom:14px">
+  <div>
+    <h1>{{ report.report_date }} 空气质量日报</h1>
+    <p class="small muted" style="margin:0">
+      <a href="/stations/{{ report.station_id }}">{{ report.station_code }}</a> · {{ report.station_name }} ·
+      纬度 {{ '%.5f'|format(report.latitude) }} / 经度 {{ '%.5f'|format(report.longitude) }}
+    </p>
+  </div>
+  <div class="row">
+    <span class="badge {{ 'green' if report.is_current else 'gray' }}">{{ '当前版本' if report.is_current else '历史版本' }}</span>
+    <span class="badge gray">v{{ report.version }}</span>
+    <a class="btn ghost small" href="/reports/{{ report.id }}/readings.json">读数 JSON</a>
+    <button class="btn ghost small" type="button" onclick="window.print()">打印</button>
+  </div>
+</div>
+
+<section class="aqi-hero" style="margin-bottom:18px">
+  <div class="aqi-big lvl-{{ level_index }}">{{ report.max_iaqi }}</div>
+  <div class="aqi-meta">
+    <div class="level">{{ report.aqi_level }}</div>
+    <div class="small muted">最大分指数项：<strong>{{ report.primary_pollutant or '—' }}</strong>{% if report.max_iaqi <= 50 %}（AQI ≤ 50，按标准可称“无首要污染物”）{% endif %}</div>
+    <div class="advice">{{ aqi_level(report.max_iaqi)[2] }}</div>
+  </div>
+  <div style="margin-left:auto; min-width:230px" class="small muted">
+    <div>发布时间：{{ report.created_at|dt }}</div>
+    <div>阈值表：#{{ report.threshold_table_id or '—' }} {{ report.threshold_snapshot.source }}</div>
+    <div class="mono" style="word-break:break-all">哈希 {{ report.threshold_hash[:32] }}…</div>
+    <div>版本 {{ report.version }}{% if report.supersedes_id %}（替代 #{{ report.supersedes_id }}）{% endif %}</div>
+    {% if report.note %}<div>备注：{{ report.note }}</div>{% endif %}
+  </div>
+</section>
+
+<div class="grid side">
+  <div>
+    <section class="card">
+      <h2>分项结果</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>污染物</th><th>计算方法</th><th class="num">有效小时</th><th class="num">日值</th><th class="num">IAQI</th><th>首要</th></tr>
+          </thead>
+          <tbody>
+            {% for key in pollutant_order %}
+            {% set p = report.readings.pollutants.get(key) %}
+            {% if p %}
+            <tr>
+              <td><strong>{{ p.label }}</strong><br><span class="small muted">{{ p.name }}</span></td>
+              <td class="small">{{ p.method_label }}{% if p.best_window %}<br><span class="muted mono">{{ p.best_window.start[11:16] }}–{{ p.best_window.end[11:16] }}</span>{% endif %}{% if p.peak_hour %}<br><span class="muted mono">峰值 {{ p.peak_hour[11:16] }}</span>{% endif %}</td>
+              <td class="num">{{ p.valid_hours }}/24</td>
+              <td class="num"><strong>{{ p.daily_value|num }}</strong><br><span class="small muted">{{ p.unit }}</span></td>
+              <td class="num"><strong>{{ p.iaqi }}</strong>{% if p.capped %}<br><span class="small muted">封顶</span>{% endif %}</td>
+              <td>{% if key in report.readings.primary_pollutants %}<span class="badge red">最大</span>{% else %}<span class="muted small">—</span>{% endif %}</td>
+            </tr>
+            {% endif %}
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <p class="small muted" style="margin-bottom:0">
+        {% for key in pollutant_order %}{% set p = report.readings.pollutants.get(key) %}{% if p and p.threshold_basis %}
+        {{ p.label }}：{{ p.threshold_basis }}{% if not loop.last %}；{% endif %}
+        {% endif %}{% endfor %}
+      </p>
+    </section>
+
+    <section class="card">
+      <h2>当日读数明细（UTC）</h2>
+      {% for key in pollutant_order %}
+      {% set p = report.readings.pollutants.get(key) %}
+      {% if p %}
+      <details {% if key == 'O3' %}open{% endif %} style="margin-bottom:8px">
+        <summary>{{ p.label }} · {{ p.valid_hours }} 个有效小时</summary>
+        <div class="table-wrap" style="margin-top:8px">
+          <table>
+            <thead><tr><th>小时</th>{% for item in p.series %}<th class="num">{{ item.hour[11:13] }}</th>{% endfor %}</tr></thead>
+            <tbody>
+              <tr><td>{{ p.unit }}</td>{% for item in p.series %}<td class="num">{{ item.value|num }}</td>{% endfor %}</tr>
+            </tbody>
+          </table>
+        </div>
+        {% if p.missing_hours %}
+        <p class="small muted" style="margin:6px 0 0">
+          缺测小时：{{ p.missing_hours|map('string')|list|length }} 个
+          （{% for h in p.missing_hours %}{{ h[11:13] }}{% if not loop.last %}, {% endif %}{% endfor %}）
+        </p>
+        {% endif %}
+      </details>
+      {% endif %}
+      {% endfor %}
+    </section>
+  </div>
+
+  <aside>
+    <section class="card">
+      <h2>版本历史</h2>
+      <ul class="timeline">
+        {% for v in versions %}
+        <li>
+          <span class="dot {{ 'warn' if not v.is_current else '' }}"></span>
+          <span>
+            <a href="/reports/{{ v.id }}">v{{ v.version }}</a>
+            {% if v.is_current %}<span class="badge green">当前</span>{% endif %}<br>
+            <span class="small muted">AQI {{ v.max_iaqi }} · {{ v.aqi_level }} · {{ v.created_at|dt }}</span>
+          </span>
+        </li>
+        {% endfor %}
+      </ul>
+    </section>
+
+    {% if unresolved_failure %}
+    <section class="card" style="border-color:#f0dcae">
+      <h2>最近一次失败尝试</h2>
+      <p class="small muted" style="margin-top:0">{{ unresolved_failure.created_at|dt }} · 未改变当前版本</p>
+      <ul class="timeline">
+        {% for reason in unresolved_failure.reasons %}
+        <li><span class="dot err"></span><span>{{ reason }}</span></li>
+        {% endfor %}
+      </ul>
+    </section>
+    {% elif failure %}
+    <section class="card" style="border-color:#f0dcae">
+      <h2>最近一次失败尝试（已被后续发布解决）</h2>
+      <p class="small muted" style="margin-top:0">{{ failure.created_at|dt }}</p>
+      <ul class="timeline">
+        {% for reason in failure.reasons %}
+        <li><span class="dot err"></span><span>{{ reason }}</span></li>
+        {% endfor %}
+      </ul>
+    </section>
+    {% endif %}
+
+    <section class="card">
+      <h2>阈值快照</h2>
+      <p class="small muted" style="margin-top:0">
+        本日报冻结的阈值表内容如下；以后修改阈值表不会影响这份日报。
+      </p>
+      <div class="table-wrap" style="max-height:360px; overflow:auto">
+        <table>
+          <thead><tr><th>项</th><th class="num">浓度</th><th class="num">指数</th></tr></thead>
+          <tbody>
+            {% for key in pollutant_order %}
+              {% for row in report.threshold_snapshot.pollutants.get(key, []) %}
+              <tr>
+                <td class="small">{% if loop.first %}<strong>{{ key }}</strong>{% endif %}</td>
+                <td class="num small">{{ row.concentration_low|num }}–{{ row.concentration_high|num }}</td>
+                <td class="num small">{{ row.index_low|num }}–{{ row.index_high|num }}</td>
+              </tr>
+              {% endfor %}
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>完整性</h2>
+      {% for key in pollutant_order %}
+      {% set c = report.completeness.get(key) %}
+      {% if c %}
+      <div class="row spread small" style="margin-bottom:4px">
+        <span>{{ pollutant_specs[key].label }}</span>
+        <span class="{{ 'muted' if c.sufficient else '' }}">
+          {{ c.valid_hours }}/24
+          {% if c.sufficient %}<span class="badge green">达标</span>{% else %}<span class="badge red">缺测</span>{% endif %}
+        </span>
+      </div>
+      {% endif %}
+      {% endfor %}
+    </section>
+  </aside>
+</div>
+{% endblock %}

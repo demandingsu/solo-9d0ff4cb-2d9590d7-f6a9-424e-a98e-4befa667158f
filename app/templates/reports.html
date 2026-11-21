@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}日报查询{% endblock %}
+{% block content %}
+<h1>日报查询</h1>
+<p class="lede">按站点编码与日期筛选；同一站点同一天可有多份版本，仅一份为当前版本。</p>
+
+<section class="card">
+  <form method="get" action="/reports" class="inline-form">
+    <div class="field">
+      <label for="station">站点编码</label>
+      <input id="station" type="text" name="station" value="{{ filter_station }}" list="station-codes" placeholder="全部站点">
+      <datalist id="station-codes">
+        {% for s in stations %}<option value="{{ s.code }}">{{ s.name }}</option>{% endfor %}
+      </datalist>
+    </div>
+    <div class="field">
+      <label for="date">UTC 日期</label>
+      <input id="date" type="date" name="date" value="{{ filter_date }}">
+    </div>
+    <button class="btn" type="submit">查询</button>
+    <a class="btn ghost" href="/reports">清除</a>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2>结果 {{ reports|length }} 条</h2>
+    <span class="small muted">按日期倒序，同日按版本倒序</span>
+  </div>
+  {% if reports %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>日期</th><th>站点</th><th class="num">AQI</th><th>级别</th><th>首要污染物</th><th>版本</th><th>发布时间</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for r in reports %}
+        <tr>
+          <td class="nowrap">{{ r.report_date }}</td>
+          <td><a href="/stations/{{ r.station_id }}">{{ r.station_code }}</a> <span class="small muted">{{ r.station_name }}</span></td>
+          <td class="num">{{ r.max_iaqi }}</td>
+          <td>{{ r.aqi_level }}</td>
+          <td>{{ r.primary_pollutant or '—' }}</td>
+          <td>v{{ r.version }} {% if r.is_current %}<span class="badge green">当前</span>{% else %}<span class="badge gray">历史</span>{% endif %}</td>
+          <td class="small nowrap muted">{{ r.created_at|dt }}</td>
+          <td><a class="btn ghost small" href="/reports/{{ r.id }}">查看</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty">没有符合条件的日报。</div>
+  {% endif %}
+</section>
+{% endblock %}
